@@ -231,10 +231,15 @@ scheduler = BackgroundScheduler(timezone=MOUNTAIN)
 scheduler.add_job(morning_post, CronTrigger(hour=10, minute=0, timezone=MOUNTAIN), id="morning")
 scheduler.add_job(eod_report, CronTrigger(hour=21, minute=0, timezone=MOUNTAIN), id="eod")
 
+
 if __name__ == "__main__":
+    print("All env vars:", [k for k in os.environ.keys()])
     token = os.environ.get("DISCORD_BOT_TOKEN")
     if not token:
-        print("❌ No DISCORD_BOT_TOKEN")
+        print("❌ No DISCORD_BOT_TOKEN found")
+        import time
+        while True:
+            time.sleep(60)
     else:
         print("🚀 Starting Leo...")
         bot.run(token)
