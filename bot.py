@@ -3,6 +3,8 @@ Leo Discord Bot — runs as main process on Railway
 """
 
 import os, json, requests, pytz, anthropic
+from homebase import get_schedule_availability as hb_schedule, get_todays_sales
+from homebase import get_schedule_availability, get_todays_sales
 from datetime import datetime, timedelta
 import discord
 from discord.ext import commands
@@ -65,22 +67,8 @@ Return ONLY valid JSON array:
 
 
 def get_homebase_sales():
-    api_key = os.environ.get("HOMEBASE_API_KEY")
-    if not api_key:
-        return daily_sales_log
-    try:
-        today = datetime.now(MOUNTAIN).strftime("%Y-%m-%d")
-        r = requests.get("https://app.joinhomebase.com/api/v1/jobs",
-                         headers={"Authorization": f"Bearer {api_key}"},
-                         params={"date": today, "status": "completed"})
-        if r.status_code == 200:
-            jobs = r.json().get("jobs", [])
-            return [{"rep": j.get("assigned_to","Unknown"), "customer": j.get("customer_name","Customer"),
-                     "amount": float(j.get("total",0)), "neighborhood": j.get("neighborhood",""),
-                     "time": j.get("time","")} for j in jobs] or daily_sales_log
-    except Exception as e:
-        print(f"Homebase error: {e}")
-    return daily_sales_log
+    sales = get_todays_sales()
+    return sales if sales else daily_sales_log
 
 
 def get_rep_totals(sales=None):
@@ -210,7 +198,7 @@ async def on_message(message):
     schedule_keywords = ["schedule", "book", "available", "opening", "when", "slot", "appointment"]
     if any(word in content for word in schedule_keywords):
         await message.channel.send("📅 Checking the schedule, one sec...")
-        await message.channel.send(get_schedule_availability())
+        await message.channel.send(hb_schedule())
         return
 
     claude = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
