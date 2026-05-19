@@ -44,7 +44,7 @@ def get_discord_headers():
 
 
 def send_discord_message(content):
-    channel_id = os.environ.get("DISCORD_CHANNEL_ID")
+    channel_id = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
     response = requests.post(
         f"https://discord.com/api/v10/channels/{channel_id}/messages",
         headers=get_discord_headers(),
