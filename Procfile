@@ -1,1 +1,1 @@
-web: python leaderboard.py
+worker: python bot.py
