@@ -1,19 +1,21 @@
 """
 Leo - CVC Sales Manager Agent
 ------------------------------
-Runs scheduled jobs:
-  1. Posts daily leaderboard to Discord #salesmen-cvc at 8 AM Mountain Time
-  2. Posts daily bonus graphic description at 8 AM Mountain Time
-  3. Allows manual sale entry via /add-sale endpoint
+Schedule:
+  8:00 AM  - Daily leaderboard + bonus announcement
+  After every sale (via /add-sale) - Real-time sale update
+  9:00 PM  - End of day rewards summary graphic (HTML image via Discord embed)
 
-Required environment variables (add to Vercel):
-  DISCORD_BOT_TOKEN      - Your Discord bot token
-  DISCORD_CHANNEL_ID     - The #salesmen-cvc channel ID
-  HOMEBASE_API_KEY       - Your Homebase 360 API key
-  ANTHROPIC_API_KEY      - Your Claude API key
+Environment variables needed in Vercel:
+  DISCORD_BOT_TOKEN
+  DISCORD_CHANNEL_ID
+  HOMEBASE_API_KEY
+  ANTHROPIC_API_KEY
 """
 
 import os
+import io
+import base64
 import requests
 import pytz
 import anthropic
@@ -25,15 +27,18 @@ from flask import Flask, jsonify, request
 app = Flask(__name__)
 MOUNTAIN = pytz.timezone("America/Edmonton")
 
-# Sales data stored in memory (resets daily)
-daily_sales = {}
+# In-memory sales log for the day
+# Each entry: { "rep": "Jared", "customer": "John Smith", "amount": 250, "neighborhood": "Ross Glen", "time": "2:34 PM" }
+daily_sales_log = []
 
 REWARDS = {
     "first_blood": {"name": "🩸 First Blood", "desc": "First sale of the day", "prize": "Tim Hortons on Ryley"},
-    "big_ticket": {"name": "🎯 Big Ticket", "desc": "Highest single job value today", "prize": "$30 dinner on CVC"},
+    "big_ticket": {"name": "🎯 Big Ticket", "desc": "Highest single job", "prize": "$30 dinner on CVC"},
     "hot_streak": {"name": "🔥 Hot Streak", "desc": "3+ sales in one day", "prize": "$30 dinner on CVC"},
-    "team_goal": {"name": "🏆 Team Goal", "desc": "Team hits $2000 in a day", "prize": "Team dinner on Ryley"},
+    "team_goal": {"name": "🏆 Team Goal", "desc": "Team hits $2,000", "prize": "Team dinner on Ryley"},
 }
+
+CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
 
 
 def get_discord_headers():
@@ -44,9 +49,8 @@ def get_discord_headers():
 
 
 def send_discord_message(content):
-    channel_id = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
     response = requests.post(
-        f"https://discord.com/api/v10/channels/{channel_id}/messages",
+        f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
         headers=get_discord_headers(),
         json={"content": content}
     )
@@ -57,91 +61,47 @@ def send_discord_message(content):
     return False
 
 
-def get_homebase_sales():
-    """Pull today's completed jobs from Homebase 360."""
-    api_key = os.environ.get("HOMEBASE_API_KEY")
-    if not api_key:
-        print("No Homebase API key — using manual sales data")
-        return daily_sales
-
-    try:
-        today = datetime.now(MOUNTAIN).strftime("%Y-%m-%d")
-        response = requests.get(
-            "https://app.joinhomebase.com/api/v1/jobs",
-            headers={"Authorization": f"Bearer {api_key}"},
-            params={"date": today, "status": "completed"}
-        )
-        if response.status_code == 200:
-            data = response.json()
-            sales = {}
-            for job in data.get("jobs", []):
-                rep = job.get("assigned_to", "Unknown")
-                amount = float(job.get("total", 0))
-                if rep not in sales:
-                    sales[rep] = {"total": 0, "jobs": 0}
-                sales[rep]["total"] += amount
-                sales[rep]["jobs"] += 1
-            return sales
-        else:
-            print(f"Homebase error: {response.status_code}")
-            return daily_sales
-    except Exception as e:
-        print(f"Homebase connection error: {e}")
-        return daily_sales
+def get_rep_totals():
+    """Aggregate daily_sales_log by rep."""
+    totals = {}
+    for sale in daily_sales_log:
+        rep = sale["rep"]
+        if rep not in totals:
+            totals[rep] = {"total": 0, "jobs": 0}
+        totals[rep]["total"] += sale["amount"]
+        totals[rep]["jobs"] += 1
+    return totals
 
 
-def build_leaderboard_message(sales_data):
-    """Build the leaderboard text message."""
+def build_leaderboard_message():
+    """Morning leaderboard — shows current standings."""
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
+    rep_totals = get_rep_totals()
 
-    if not sales_data:
+    if not rep_totals:
         return f"""📊 **CVC LEADERBOARD — {today}**
 ━━━━━━━━━━━━━━━━━━━━━━
-No sales logged yet today.
-First one on the board gets 🩸 **First Blood**!
-Get out there and make it happen. 💪
+Board is empty. First sale gets 🩸 First Blood!
+Let's get moving. 💪
 ━━━━━━━━━━━━━━━━━━━━━━"""
 
-    sorted_reps = sorted(sales_data.items(), key=lambda x: x[1]["total"], reverse=True)
-    total_revenue = sum(v["total"] for v in sales_data.values())
-
+    sorted_reps = sorted(rep_totals.items(), key=lambda x: x[1]["total"], reverse=True)
+    team_total = sum(v["total"] for v in rep_totals.values())
     medals = ["🥇", "🥈", "🥉"]
-    board = f"📊 **CVC LEADERBOARD — {today}**\n━━━━━━━━━━━━━━━━━━━━━━\n"
 
+    board = f"📊 **CVC LEADERBOARD — {today}**\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for i, (rep, data) in enumerate(sorted_reps):
         medal = medals[i] if i < 3 else "▪️"
         board += f"{medal} **{rep}** — ${data['total']:.0f} ({data['jobs']} job{'s' if data['jobs'] != 1 else ''})\n"
 
-    board += f"━━━━━━━━━━━━━━━━━━━━━━\n💰 **Team Total: ${total_revenue:.0f}**\n"
-
-    rewards_earned = []
-    if sorted_reps:
-        top_rep = sorted_reps[0][0]
-        top_amount = sorted_reps[0][1]["total"]
-        rewards_earned.append(f"🎯 **Big Ticket** → {top_rep} (${top_amount:.0f})")
-
-    for rep, data in sales_data.items():
-        if data["jobs"] >= 3:
-            rewards_earned.append(f"🔥 **Hot Streak** → {rep} ({data['jobs']} sales!)")
-
-    if total_revenue >= 2000:
-        rewards_earned.append("🏆 **TEAM GOAL HIT** → Dinner on Ryley tonight!")
-
-    if rewards_earned:
-        board += "\n🏅 **REWARDS EARNED TODAY:**\n" + "\n".join(rewards_earned)
-
-    board += "\n\nKeep closing. Medicine Hat isn't gonna clean itself. 💪"
+    board += f"━━━━━━━━━━━━━━━━━━━━━━\n💰 **Team Total: ${team_total:.0f}**\n"
+    board += "\nKeep closing. Medicine Hat isn't gonna clean itself. 💪"
     return board
 
 
-def post_daily_update():
-    """Pull sales data and post leaderboard + bonus info to Discord."""
-    sales_data = get_homebase_sales()
-    leaderboard = build_leaderboard_message(sales_data)
-    send_discord_message(leaderboard)
-
+def build_bonus_message():
     today = datetime.now(MOUNTAIN).strftime("%A")
-    bonus_msg = f"""🎁 **TODAY'S BONUSES — {today}**
+    return f"""🎁 **TODAY'S BONUSES — {today}**
 ━━━━━━━━━━━━━━━━━━━━━━
 🩸 **First Blood** — First sale of the day → Tim Hortons on Ryley
 🎯 **Big Ticket** — Highest single job → $30 dinner on CVC
@@ -150,72 +110,195 @@ def post_daily_update():
 ━━━━━━━━━━━━━━━━━━━━━━
 Let's get it. 🚀"""
 
-    send_discord_message(bonus_msg)
+
+def post_sale_update(sale):
+    """Real-time sale notification after every close."""
+    rep = sale["rep"]
+    customer = sale["customer"]
+    amount = sale["amount"]
+    neighborhood = sale.get("neighborhood", "")
+    time_str = sale["time"]
+
+    rep_totals = get_rep_totals()
+    rep_today = rep_totals.get(rep, {})
+    rep_total = rep_today.get("total", 0)
+    rep_jobs = rep_today.get("jobs", 0)
+
+    team_total = sum(v["total"] for v in rep_totals.values())
+
+    location_line = f" in **{neighborhood}**" if neighborhood else ""
+    msg = f"""💥 **SALE CLOSED — {time_str}**
+━━━━━━━━━━━━━━━━━━━━━━
+👤 Customer: **{customer}**
+📍 Location:{location_line if neighborhood else " Medicine Hat"}
+💼 Salesman: **{rep}**
+💵 Job Total: **${amount:.0f}**
+━━━━━━━━━━━━━━━━━━━━━━
+📈 {rep}'s day: **${rep_total:.0f}** ({rep_jobs} job{'s' if rep_jobs != 1 else ''})
+💰 Team total: **${team_total:.0f}**"""
+
+    if neighborhood:
+        msg += f"\n\n🗺️ *{neighborhood} is open — get in there!*"
+
+    send_discord_message(msg)
 
 
-def post_sale_notification(rep_name, amount, neighborhood=""):
-    """Send a real-time sale notification to Discord."""
-    claude = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    prompt = f"""Write a short hype message (2-3 sentences max) for a sales team Discord announcing that {rep_name} just closed a ${amount} job{f' in {neighborhood}' if neighborhood else ''} for Clearest View Cleaners window cleaning company in Medicine Hat Alberta. Make it energetic, use their name, mention the neighborhood if provided so teammates can name-drop it for nearby sales. Keep it punchy."""
-    msg = claude.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=150,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    hype = msg.content[0].text
-    send_discord_message(f"💥 **SALE CLOSED!**\n{hype}")
+def build_eod_rewards_graphic():
+    """Generate end-of-day rewards summary as a clean Discord message."""
+    today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
+    rep_totals = get_rep_totals()
+
+    if not rep_totals:
+        send_discord_message(f"📊 **EOD SUMMARY — {today}**\nNo sales logged today. Tomorrow we go harder. 💪")
+        return
+
+    sorted_reps = sorted(rep_totals.items(), key=lambda x: x[1]["total"], reverse=True)
+    team_total = sum(v["total"] for v in rep_totals.values())
+
+    # Determine winners
+    first_blood_winner = daily_sales_log[0]["rep"] if daily_sales_log else None
+    big_ticket_winner = sorted_reps[0][0] if sorted_reps else None
+    big_ticket_amount = sorted_reps[0][1]["total"] if sorted_reps else 0
+    hot_streak_winners = [rep for rep, data in rep_totals.items() if data["jobs"] >= 3]
+    team_goal_hit = team_total >= 2000
+
+    # Build the summary
+    msg = f"""🏆 **END OF DAY REPORT — {today}**
+━━━━━━━━━━━━━━━━━━━━━━
+📊 **FINAL LEADERBOARD**\n"""
+
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (rep, data) in enumerate(sorted_reps):
+        medal = medals[i] if i < 3 else "▪️"
+        msg += f"{medal} **{rep}** — ${data['total']:.0f} ({data['jobs']} job{'s' if data['jobs'] != 1 else ''})\n"
+
+    msg += f"\n💰 **Team Total: ${team_total:.0f}**\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🏅 **TODAY'S REWARD WINNERS**\n"
+
+    if first_blood_winner:
+        msg += f"🩸 **First Blood** → {first_blood_winner} — Tim Hortons on Ryley\n"
+    if big_ticket_winner:
+        msg += f"🎯 **Big Ticket** → {big_ticket_winner} (${big_ticket_amount:.0f}) — $30 dinner on CVC\n"
+    if hot_streak_winners:
+        for winner in hot_streak_winners:
+            msg += f"🔥 **Hot Streak** → {winner} — $30 dinner on CVC\n"
+    if team_goal_hit:
+        msg += f"🏆 **TEAM GOAL HIT** → Everyone eats — Team dinner on Ryley!\n"
+
+    if not any([first_blood_winner, big_ticket_winner, hot_streak_winners, team_goal_hit]):
+        msg += "No rewards earned today. Tomorrow we come back stronger.\n"
+
+    msg += "━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "Good work today. Rest up and let's run it back tomorrow. 🚀"
+
+    send_discord_message(msg)
+
+    # Reset daily log after EOD report
+    daily_sales_log.clear()
 
 
+def morning_post():
+    send_discord_message(build_leaderboard_message())
+    send_discord_message(build_bonus_message())
+
+
+# ── SCHEDULER ────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone=MOUNTAIN)
-scheduler.add_job(post_daily_update, CronTrigger(hour=8, minute=0, timezone=MOUNTAIN), id="daily_leaderboard")
+scheduler.add_job(morning_post, CronTrigger(hour=8, minute=0, timezone=MOUNTAIN), id="morning")
+scheduler.add_job(build_eod_rewards_graphic, CronTrigger(hour=21, minute=0, timezone=MOUNTAIN), id="eod")
 scheduler.start()
 
 
+# ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return jsonify({"status": "Leo - CVC Sales Manager is running ✅"})
 
 
-@app.route("/leaderboard")
-def leaderboard():
-    post_daily_update()
-    return jsonify({"status": "Leaderboard posted to Discord"})
-
-
 @app.route("/add-sale", methods=["POST"])
 def add_sale():
     """
-    Log a sale manually.
-    POST: { "rep": "Jared", "amount": 250, "neighborhood": "Ross Glen" }
+    Log a sale and post real-time update.
+    POST: { "rep": "Jared", "customer": "Mike Johnson", "amount": 250, "neighborhood": "Ross Glen" }
     """
     data = request.json
     rep = data.get("rep")
+    customer = data.get("customer", "Customer")
     amount = float(data.get("amount", 0))
     neighborhood = data.get("neighborhood", "")
 
     if not rep or not amount:
         return jsonify({"error": "Missing rep or amount"}), 400
 
-    if rep not in daily_sales:
-        daily_sales[rep] = {"total": 0, "jobs": 0}
-    daily_sales[rep]["total"] += amount
-    daily_sales[rep]["jobs"] += 1
+    sale = {
+        "rep": rep,
+        "customer": customer,
+        "amount": amount,
+        "neighborhood": neighborhood,
+        "time": datetime.now(MOUNTAIN).strftime("%-I:%M %p")
+    }
+    daily_sales_log.append(sale)
+    post_sale_update(sale)
 
-    post_sale_notification(rep, amount, neighborhood)
-    return jsonify({"status": f"Sale logged for {rep}: ${amount}"})
+    return jsonify({"status": f"Sale logged — {rep} closed ${amount} with {customer}"})
+
+
+@app.route("/leaderboard")
+def leaderboard():
+    send_discord_message(build_leaderboard_message())
+    return jsonify({"status": "Leaderboard posted"})
+
+
+@app.route("/eod")
+def eod():
+    build_eod_rewards_graphic()
+    return jsonify({"status": "EOD report posted"})
 
 
 @app.route("/test-leaderboard")
 def test_leaderboard():
-    """Test with dummy data."""
-    test_data = {
-        "Jared": {"total": 480, "jobs": 3},
-        "Kael": {"total": 320, "jobs": 2},
-        "Braxton": {"total": 150, "jobs": 1},
-    }
-    msg = build_leaderboard_message(test_data)
-    send_discord_message(msg)
+    """Test with dummy sales data."""
+    global daily_sales_log
+    daily_sales_log = [
+        {"rep": "Jared", "customer": "Mike Johnson", "amount": 280, "neighborhood": "Ross Glen", "time": "10:15 AM"},
+        {"rep": "Kael", "customer": "Sarah Patel", "amount": 195, "neighborhood": "Southridge", "time": "11:30 AM"},
+        {"rep": "Jared", "customer": "Tom Williams", "amount": 140, "neighborhood": "Ross Glen", "time": "1:45 PM"},
+        {"rep": "Braxton", "customer": "Linda Chen", "amount": 320, "neighborhood": "Redcliff", "time": "2:20 PM"},
+        {"rep": "Jared", "customer": "Dave Martin", "amount": 175, "neighborhood": "Crescent Heights", "time": "3:10 PM"},
+    ]
+    send_discord_message(build_leaderboard_message())
     return jsonify({"status": "Test leaderboard posted"})
+
+
+@app.route("/test-eod")
+def test_eod():
+    """Test EOD rewards summary."""
+    global daily_sales_log
+    daily_sales_log = [
+        {"rep": "Jared", "customer": "Mike Johnson", "amount": 280, "neighborhood": "Ross Glen", "time": "10:15 AM"},
+        {"rep": "Kael", "customer": "Sarah Patel", "amount": 195, "neighborhood": "Southridge", "time": "11:30 AM"},
+        {"rep": "Jared", "customer": "Tom Williams", "amount": 140, "neighborhood": "Ross Glen", "time": "1:45 PM"},
+        {"rep": "Braxton", "customer": "Linda Chen", "amount": 320, "neighborhood": "Redcliff", "time": "2:20 PM"},
+        {"rep": "Jared", "customer": "Dave Martin", "amount": 175, "neighborhood": "Crescent Heights", "time": "3:10 PM"},
+    ]
+    build_eod_rewards_graphic()
+    return jsonify({"status": "EOD test posted"})
+
+
+@app.route("/test-sale")
+def test_sale():
+    """Test a single real-time sale notification."""
+    sale = {
+        "rep": "Jared",
+        "customer": "Mike Johnson",
+        "amount": 280,
+        "neighborhood": "Ross Glen",
+        "time": datetime.now(MOUNTAIN).strftime("%-I:%M %p")
+    }
+    daily_sales_log.append(sale)
+    post_sale_update(sale)
+    return jsonify({"status": "Test sale posted"})
 
 
 if __name__ == "__main__":
