@@ -1,6 +1,5 @@
 """
-CVC Discord Image Generator
-Generates clean graphics and posts them to Discord as image files
+CVC Discord Image Generator — Gold & Black Brand
 """
 
 from PIL import Image, ImageDraw, ImageFont
@@ -9,12 +8,19 @@ import os
 import requests
 
 CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
+GOLD = "#C9A84C"
+GOLD_LIGHT = "#F0D080"
+GOLD_BG = "#1F1A0E"
+BLACK = "#111111"
+CARD = "#1A1A1A"
+BORDER = "#2A2A2A"
+GOLD_BORDER = "#3A3010"
+WHITE = "#FFFFFF"
+GRAY = "#666666"
+MUTED = "#444444"
 
-def get_discord_headers_multipart():
-    return {"Authorization": f"Bot {os.environ.get('DISCORD_BOT_TOKEN')}"}
 
 def send_discord_image(image_buf, filename="cvc.png", caption=""):
-    """Send an image file to Discord channel."""
     image_buf.seek(0)
     files = {"file": (filename, image_buf, "image/png")}
     data = {}
@@ -22,109 +28,121 @@ def send_discord_image(image_buf, filename="cvc.png", caption=""):
         data["content"] = caption
     response = requests.post(
         f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
-        headers=get_discord_headers_multipart(),
+        headers={"Authorization": f"Bot {os.environ.get('DISCORD_BOT_TOKEN')}"},
         files=files,
         data=data
     )
     if response.status_code == 200:
-        print(f"✅ Image sent to Discord: {filename}")
+        print(f"✅ Image sent: {filename}")
         return True
     print(f"❌ Discord image error: {response.status_code} {response.text}")
     return False
+
 
 def load_fonts():
     try:
         bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         reg = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         return {
-            "xl": ImageFont.truetype(bold, 32),
-            "lg": ImageFont.truetype(bold, 24),
-            "md": ImageFont.truetype(bold, 19),
-            "sm": ImageFont.truetype(reg, 16),
-            "xs": ImageFont.truetype(reg, 13),
+            "xxl": ImageFont.truetype(bold, 38),
+            "xl":  ImageFont.truetype(bold, 28),
+            "lg":  ImageFont.truetype(bold, 22),
+            "md":  ImageFont.truetype(bold, 17),
+            "sm":  ImageFont.truetype(reg,  15),
+            "xs":  ImageFont.truetype(reg,  12),
+            "tag": ImageFont.truetype(bold, 11),
         }
     except:
         f = ImageFont.load_default()
-        return {"xl": f, "lg": f, "md": f, "sm": f, "xs": f}
+        return {k: f for k in ["xxl","xl","lg","md","sm","xs","tag"]}
 
-def draw_pill(draw, x, y, w, h, color):
-    r = h // 2
-    draw.ellipse([x, y, x+r*2, y+h], fill=color)
-    draw.ellipse([x+w-r*2, y, x+w, y+h], fill=color)
-    draw.rectangle([x+r, y, x+w-r, y+h], fill=color)
 
-def draw_card(draw, x, y, w, h, fill, radius=12):
-    draw.rounded_rectangle([x, y, x+w, y+h], radius=radius, fill=fill)
+def draw_rounded_rect(draw, x, y, w, h, r, fill, outline=None, outline_width=1):
+    draw.rounded_rectangle([x, y, x+w, y+h], radius=r, fill=fill, outline=outline, width=outline_width)
 
-def generate_bonus_image(date_str, core_bonuses, creative_bonuses):
-    """Generate the morning daily bonuses graphic."""
+
+def draw_gold_bar(draw, x, y, w, h=4):
+    """Draw a gold gradient-style bar using dithered stripes."""
+    draw.rectangle([x, y, x+w, y+h], fill=GOLD)
+
+
+def generate_bonus_image(date_str, bonuses):
+    """
+    Generate morning daily bonuses graphic.
+    bonuses: list of {"emoji", "name", "desc", "prize"} — 3 or 4 items
+    """
     W = 900
-    ACCENT = "#378ADD"
-    BG = "#F8F9FA"
-    CARD_BG = "#FFFFFF"
-    TEXT_PRIMARY = "#1a1a1a"
-    TEXT_SECONDARY = "#666666"
-    TEXT_MUTED = "#999999"
+    cols = 2
+    rows = (len(bonuses) + 1) // 2
+    card_h = 130
+    card_w = (W - 80 - 20) // 2
+    H = 180 + (rows * (card_h + 12)) + 60
 
-    all_bonuses = core_bonuses + creative_bonuses
-    rows = (len(all_bonuses) + 1) // 2
-    H = 160 + (rows * 130) + 60
-
-    img = Image.new("RGB", (W, H), color=BG)
+    img = Image.new("RGB", (W, H), color=BLACK)
     draw = ImageDraw.Draw(img)
     fonts = load_fonts()
 
-    # Top accent bar
-    draw.rectangle([0, 0, W, 8], fill=ACCENT)
+    # Gold top bar
+    draw_gold_bar(draw, 0, 0, W, 6)
 
-    # Header
-    draw.text((W//2, 40), "TODAY'S BONUSES", font=fonts["xl"], fill=TEXT_PRIMARY, anchor="mm")
-    draw.text((W//2, 76), date_str, font=fonts["sm"], fill=TEXT_SECONDARY, anchor="mm")
-    draw.text((W//2, 100), "Win big. Close more. Medicine Hat's waiting.", font=fonts["xs"], fill=TEXT_MUTED, anchor="mm")
+    # Tag line
+    draw.text((50, 26), "CLEAREST VIEW CLEANERS", font=fonts["tag"], fill=GOLD)
+
+    # Title
+    draw.text((50, 50), "Today's Bonuses", font=fonts["xxl"], fill=WHITE)
+
+    # Subtitle
+    draw.text((50, 98), "Win big. Close more. Let's go.", font=fonts["sm"], fill=GRAY)
+
+    # Date badge
+    badge_text = date_str
+    bw = len(badge_text) * 9 + 28
+    bx = W - 50 - bw
+    draw_rounded_rect(draw, bx, 26, bw, 28, 14, GOLD_BG, GOLD_BORDER, 1)
+    draw.text((bx + bw//2, 40), badge_text, font=fonts["xs"], fill=GOLD, anchor="mm")
 
     # Divider
-    draw.rectangle([40, 118, W-40, 119], fill="#E0E0E0")
+    draw.rectangle([50, 120, W-50, 121], fill=BORDER)
 
-    BADGE_COLORS = {
-        "danger":  ("#FFEBEE", "#C62828"),
-        "warning": ("#FFF8E1", "#E65100"),
-        "success": ("#E8F5E9", "#2E7D32"),
-        "info":    ("#E3F2FD", "#1565C0"),
-        "purple":  ("#F3E5F5", "#6A1B9A"),
-        "teal":    ("#E0F2F1", "#00695C"),
-    }
-
-    col_w = (W - 80) // 2
-    for i, bonus in enumerate(all_bonuses):
+    # Bonus cards
+    for i, bonus in enumerate(bonuses):
         col = i % 2
         row = i // 2
-        cx = 40 + col * (col_w + 20)
-        cy = 134 + row * 130
+        cx = 40 + col * (card_w + 20)
+        cy = 136 + row * (card_h + 12)
 
-        color_key = bonus.get("color", "info")
-        bg_col, text_col = BADGE_COLORS.get(color_key, BADGE_COLORS["info"])
+        # Card background
+        draw_rounded_rect(draw, cx, cy, card_w, card_h, 12, CARD, BORDER, 1)
 
-        draw_card(draw, cx, cy, col_w, 110, CARD_BG)
+        # Gold top accent on card
+        draw_gold_bar(draw, cx, cy, card_w, 3)
+        draw.rounded_rectangle([cx, cy, cx+card_w, cy+6], radius=3, fill=GOLD)
 
-        # Emoji circle
-        draw.ellipse([cx+16, cy+16, cx+60, cy+60], fill=bg_col)
-        draw.text((cx+38, cy+38), bonus["emoji"], font=fonts["lg"], fill=text_col, anchor="mm")
+        # Emoji
+        draw.text((cx+20, cy+28), bonus["emoji"], font=fonts["xl"], fill=WHITE, anchor="lm")
 
         # Name
-        draw.text((cx+72, cy+22), bonus["name"].title(), font=fonts["md"], fill=TEXT_PRIMARY, anchor="lm")
+        draw.text((cx+72, cy+22), bonus["name"], font=fonts["md"], fill=WHITE, anchor="lm")
 
         # Desc
-        draw.text((cx+72, cy+44), bonus["desc"], font=fonts["xs"], fill=TEXT_SECONDARY, anchor="lm")
+        desc = bonus["desc"]
+        if len(desc) > 38:
+            desc = desc[:36] + "…"
+        draw.text((cx+72, cy+44), desc, font=fonts["xs"], fill=GRAY, anchor="lm")
 
         # Prize pill
-        prize_text = bonus["prize"]
-        pill_w = len(prize_text) * 8 + 24
-        draw_pill(draw, cx+16, cy+70, pill_w, 26, bg_col)
-        draw.text((cx+16+pill_w//2, cy+83), prize_text, font=fonts["xs"], fill=text_col, anchor="mm")
+        prize = bonus["prize"]
+        pw = len(prize) * 8 + 24
+        draw_rounded_rect(draw, cx+16, cy+card_h-36, pw, 22, 11, GOLD_BG, GOLD_BORDER, 1)
+        draw.text((cx+16+pw//2, cy+card_h-25), prize, font=fonts["xs"], fill=GOLD, anchor="mm")
 
-    # Bottom bar
-    draw.rectangle([0, H-8, W, H], fill=ACCENT)
-    draw.text((W//2, H-26), "Let's get it. Every door is an opportunity.", font=fonts["xs"], fill=TEXT_MUTED, anchor="mm")
+    # Footer
+    footer_y = H - 48
+    draw.rectangle([50, footer_y, W-50, footer_y+1], fill=BORDER)
+    draw.text((W//2, H-22), "Every door is an opportunity — Medicine Hat's waiting.", font=fonts["xs"], fill=MUTED, anchor="mm")
+
+    # Gold bottom bar
+    draw_gold_bar(draw, 0, H-5, W, 5)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -134,89 +152,93 @@ def generate_bonus_image(date_str, core_bonuses, creative_bonuses):
 
 def generate_eod_image(date_str, leaderboard, rewards, team_total, team_deals):
     """
-    Generate end-of-day rewards graphic.
-    leaderboard: [{"name": "Jared", "total": 595, "jobs": 3}, ...]
-    rewards: [{"emoji": "🩸", "name": "First Blood", "winner": "Jared", "prize": "Tim Hortons on Ryley"}, ...]
+    Generate end-of-day report graphic.
+    leaderboard: [{"name", "total", "jobs"}, ...]
+    rewards: [{"emoji", "name", "winner", "prize"}, ...]
     """
     W = 900
-    ACCENT = "#378ADD"
-    BG = "#F8F9FA"
-    CARD_BG = "#FFFFFF"
-    TEXT_PRIMARY = "#1a1a1a"
-    TEXT_SECONDARY = "#666666"
-    TEXT_MUTED = "#999999"
-    GREEN = "#2E7D32"
-    GREEN_BG = "#E8F5E9"
+    rep_h = 68
+    reward_h = 68
+    H = 200 + (len(leaderboard) * rep_h) + 80 + 40 + (len(rewards) * reward_h) + 70
 
-    H = 200 + (len(leaderboard) * 72) + 80 + (len(rewards) * 80) + 80
-    img = Image.new("RGB", (W, H), color=BG)
+    img = Image.new("RGB", (W, H), color=BLACK)
     draw = ImageDraw.Draw(img)
     fonts = load_fonts()
 
-    # Top bar
-    draw.rectangle([0, 0, W, 8], fill=ACCENT)
+    # Gold top bar
+    draw_gold_bar(draw, 0, 0, W, 6)
 
-    # Header
-    draw.text((W//2, 44), "CVC END OF DAY REPORT", font=fonts["xl"], fill=TEXT_PRIMARY, anchor="mm")
-    draw.text((W//2, 80), date_str, font=fonts["sm"], fill=TEXT_SECONDARY, anchor="mm")
-    draw.rectangle([40, 100, W-40, 101], fill="#E0E0E0")
+    # Tag
+    draw.text((50, 26), "CLEAREST VIEW CLEANERS", font=fonts["tag"], fill=GOLD)
 
-    y = 116
+    # Title
+    draw.text((50, 50), "End of Day Report", font=fonts["xxl"], fill=WHITE)
+    draw.text((50, 98), "Final standings + reward winners", font=fonts["sm"], fill=GRAY)
 
-    # Leaderboard section label
-    draw.text((56, y+14), "LEADERBOARD", font=fonts["xs"], fill=TEXT_MUTED, anchor="lm")
-    y += 36
+    # Date badge
+    bw = len(date_str) * 9 + 28
+    bx = W - 50 - bw
+    draw_rounded_rect(draw, bx, 26, bw, 28, 14, GOLD_BG, GOLD_BORDER, 1)
+    draw.text((bx + bw//2, 40), date_str, font=fonts["xs"], fill=GOLD, anchor="mm")
 
-    MEDAL_COLORS = [("#FFF8E1", "#E65100", "🥇"), ("#F5F5F5", "#616161", "🥈"), ("#FBE9E7", "#BF360C", "🥉")]
+    draw.rectangle([50, 120, W-50, 121], fill=BORDER)
 
+    y = 136
+
+    # Section label
+    draw.text((50, y+10), "LEADERBOARD", font=fonts["tag"], fill=MUTED)
+    y += 32
+
+    medals = ["🥇", "🥈", "🥉"]
     for i, rep in enumerate(leaderboard):
-        bg, tc, medal = MEDAL_COLORS[i] if i < 3 else ("#FFFFFF", "#333333", f"#{i+1}")
-        draw_card(draw, 40, y, W-80, 60, CARD_BG)
-        if i < 3:
-            draw.rounded_rectangle([40, y, 52, y+60], radius=6, fill=bg)
-        draw.text((72, y+30), medal, font=fonts["lg"], fill=tc, anchor="lm")
-        draw.text((120, y+18), rep["name"], font=fonts["md"], fill=TEXT_PRIMARY, anchor="lm")
-        draw.text((120, y+42), f"{rep['jobs']} job{'s' if rep['jobs'] != 1 else ''}", font=fonts["xs"], fill=TEXT_SECONDARY, anchor="lm")
-        amt_text = f"${rep['total']:,.0f}"
-        draw.text((W-60, y+30), amt_text, font=fonts["lg"], fill=GREEN, anchor="rm")
-        y += 68
+        is_top = i == 0
+        card_fill = "#1C1800" if is_top else CARD
+        card_border = "#3A3010" if is_top else BORDER
+        draw_rounded_rect(draw, 40, y, W-80, 58, 10, card_fill, card_border, 1)
+        if is_top:
+            draw_gold_bar(draw, 40, y, W-80, 3)
+            draw.rounded_rectangle([40, y, W-40, y+6], radius=3, fill=GOLD)
+
+        medal = medals[i] if i < 3 else f"#{i+1}"
+        draw.text((68, y+29), medal, font=fonts["lg"], fill=GOLD if is_top else WHITE, anchor="lm")
+        draw.text((120, y+18), rep["name"], font=fonts["md"], fill=WHITE, anchor="lm")
+        draw.text((120, y+40), f"{rep['jobs']} job{'s' if rep['jobs']!=1 else ''} closed", font=fonts["xs"], fill=GRAY, anchor="lm")
+        draw.text((W-60, y+29), f"${rep['total']:,.0f}", font=fonts["lg"], fill=GOLD, anchor="rm")
+        y += rep_h
 
     # Team total bar
-    draw_card(draw, 40, y, W-80, 52, GREEN_BG)
-    draw.text((68, y+26), "Team total", font=fonts["sm"], fill=GREEN, anchor="lm")
-    draw.text((W-60, y+14), f"${team_total:,.0f}", font=fonts["lg"], fill=GREEN, anchor="rm")
-    draw.text((W-60, y+38), f"{team_deals} deals", font=fonts["xs"], fill=GREEN, anchor="rm")
+    draw_rounded_rect(draw, 40, y, W-80, 56, 10, GOLD_BG, GOLD_BORDER, 1)
+    draw.text((68, y+28), "Team Total", font=fonts["md"], fill=GOLD, anchor="lm")
+    draw.text((W-60, y+18), f"${team_total:,.0f}", font=fonts["lg"], fill=GOLD, anchor="rm")
+    draw.text((W-60, y+40), f"{team_deals} deals today", font=fonts["xs"], fill=GRAY, anchor="rm")
     y += 68
 
-    draw.rectangle([40, y, W-40, y+1], fill="#E0E0E0")
-    y += 16
+    draw.rectangle([50, y+8, W-50, y+9], fill=BORDER)
+    y += 26
 
     # Rewards section
-    draw.text((56, y+14), "REWARD WINNERS", font=fonts["xs"], fill=TEXT_MUTED, anchor="lm")
-    y += 36
-
-    REWARD_COLORS = {
-        "First Blood":  ("#FFEBEE", "#C62828"),
-        "Big Ticket":   ("#FFF8E1", "#E65100"),
-        "Most Deals":   ("#FFF3E0", "#E65100"),
-        "High Roller":  ("#E8F5E9", "#2E7D32"),
-        "Team Goal":    ("#E3F2FD", "#1565C0"),
-    }
+    draw.text((50, y+10), "REWARD WINNERS", font=fonts["tag"], fill=MUTED)
+    y += 32
 
     for reward in rewards:
-        bg, tc = REWARD_COLORS.get(reward["name"], ("#F3E5F5", "#6A1B9A"))
-        draw_card(draw, 40, y, W-80, 64, CARD_BG)
-        draw.rounded_rectangle([40, y, 52, y+64], radius=6, fill=bg)
-        draw.text((72, y+32), reward["emoji"], font=fonts["lg"], fill=tc, anchor="lm")
-        draw.text((120, y+16), reward["name"], font=fonts["md"], fill=TEXT_PRIMARY, anchor="lm")
-        draw.text((120, y+42), f"→ {reward['winner']}", font=fonts["sm"], fill=TEXT_SECONDARY, anchor="lm")
-        draw.text((W-60, y+32), reward["prize"], font=fonts["xs"], fill=TEXT_MUTED, anchor="rm")
-        y += 72
+        draw_rounded_rect(draw, 40, y, W-80, 58, 10, CARD, BORDER, 1)
+        draw_gold_bar(draw, 40, y, 4, 58)
+        draw.rounded_rectangle([40, y, 44, y+58], radius=2, fill=GOLD)
+
+        draw.text((68, y+29), reward["emoji"], font=fonts["lg"], fill=WHITE, anchor="lm")
+        draw.text((118, y+18), reward["name"], font=fonts["md"], fill=WHITE, anchor="lm")
+        draw.text((118, y+40), f"→ {reward['winner']}", font=fonts["sm"], fill=GRAY, anchor="lm")
+
+        pw = len(reward["prize"]) * 8 + 24
+        draw_rounded_rect(draw, W-60-pw, y+18, pw, 22, 11, GOLD_BG, GOLD_BORDER, 1)
+        draw.text((W-60-pw//2, y+29), reward["prize"], font=fonts["xs"], fill=GOLD, anchor="mm")
+        y += reward_h
 
     # Footer
-    draw.rectangle([40, y+8, W-40, y+9], fill="#E0E0E0")
-    draw.text((W//2, y+28), "Good work today. Rest up and let's run it back tomorrow. 🚀", font=fonts["xs"], fill=TEXT_MUTED, anchor="mm")
-    draw.rectangle([0, H-8, W, H], fill=ACCENT)
+    draw.rectangle([50, y+8, W-50, y+9], fill=BORDER)
+    draw.text((W//2, y+26), "Good work today. Let's run it back tomorrow.", font=fonts["xs"], fill=MUTED, anchor="mm")
+
+    draw_gold_bar(draw, 0, H-5, W, 5)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
