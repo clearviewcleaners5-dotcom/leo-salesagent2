@@ -1,87 +1,189 @@
 """
 Leo - CVC Sales Manager Agent
-Gold & Black brand. 3-4 daily bonuses. Image graphics to Discord.
-Schedule: 8AM morning post, real-time sale updates, 9PM EOD report.
+Full Discord bot with message listening, scheduling, image graphics.
+Schedule: 10AM bonuses, real-time sale alerts, 9PM EOD report.
+Leo responds to scheduling questions in Discord automatically.
 """
 
-import os, io, json, requests, pytz, anthropic
-from datetime import datetime
+import os, io, json, requests, pytz, anthropic, threading
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from flask import Flask, jsonify, request
 from image_gen import generate_bonus_image, generate_eod_image, send_discord_image
+import discord
+from discord.ext import commands
 
 app = Flask(__name__)
 MOUNTAIN = pytz.timezone("America/Edmonton")
 daily_sales_log = []
 daily_bonuses = []
 CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
+MAX_HOURS_PER_DAY = 7
+AVG_JOB_HOURS = 2.0  # average job length in hours
 
-CORE_BONUSES = [
-    {"emoji": "🩸", "name": "First Blood",  "desc": "First sale of the day",        "prize": "Tim Hortons on Ryley"},
-    {"emoji": "🎯", "name": "Big Ticket",   "desc": "Highest single job value",      "prize": "$20 cash bonus"},
-    {"emoji": "🔥", "name": "Most Deals",   "desc": "Most jobs closed today",        "prize": "$20 cash bonus"},
-    {"emoji": "🍽️", "name": "High Roller",  "desc": "Sell $1,000+ in one day",      "prize": "Free dinner on CVC"},
-    {"emoji": "🏆", "name": "Team Goal",    "desc": "Team hits 10 deals today",      "prize": "$10 bonus everyone"},
-]
+CORE_BONUS = {"emoji": "🩸", "name": "First Blood", "desc": "First sale of the day", "prize": "Tim Hortons on Ryley"}
+
+# ── DISCORD BOT ───────────────────────────────────────────────────────────────
+intents = discord.Intents.default()
+intents.message_content = True
+intents.messages = True
+intents.guilds = True
+intents.polls = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+@bot.event
+async def on_ready():
+    print(f"✅ Leo is online as {bot.user}")
+
+
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+
+    content = message.content.lower()
+    is_addressed = "leo" in content or "hey leo" in content
+
+    if not is_addressed:
+        await bot.process_commands(message)
+        return
+
+    # Scheduling questions
+    schedule_keywords = ["schedule", "book", "available", "opening", "when", "slot", "appointment"]
+    if any(word in content for word in schedule_keywords):
+        await message.channel.send("📅 Checking the schedule, one sec...")
+        schedule_info = get_schedule_availability()
+        await message.channel.send(schedule_info, tts=False)
+        return
+
+    # General questions — ask Claude
+    claude = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    prompt = f"""You are Leo, the AI sales manager for Clearest View Cleaners (CVC), a window cleaning, soft washing, pressure washing and gutter cleaning company in Medicine Hat, Alberta.
+A team member just messaged you in Discord: "{message.content}"
+Reply in 1-3 sentences max. Be direct, energetic, helpful. You're a hype sales manager."""
+    try:
+        msg = claude.messages.create(model="claude-sonnet-4-5", max_tokens=150,
+                                     messages=[{"role": "user", "content": prompt}])
+        await message.channel.send(msg.content[0].text)
+    except Exception as e:
+        await message.channel.send("I'm on it. Give me a sec.")
+
+    await bot.process_commands(message)
+
+
+def get_homebase_schedule():
+    """Get booked jobs from Homebase 360 for the next 2 weeks."""
+    api_key = os.environ.get("HOMEBASE_API_KEY")
+    if not api_key:
+        return {}
+
+    schedule = {}
+    try:
+        today = datetime.now(MOUNTAIN)
+        for i in range(14):
+            day = today + timedelta(days=i)
+            if day.weekday() >= 5:  # skip weekends
+                continue
+            date_str = day.strftime("%Y-%m-%d")
+            r = requests.get(
+                "https://app.joinhomebase.com/api/v1/jobs",
+                headers={"Authorization": f"Bearer {api_key}"},
+                params={"date": date_str}
+            )
+            if r.status_code == 200:
+                jobs = r.json().get("jobs", [])
+                booked_hours = sum(float(j.get("duration_hours", AVG_JOB_HOURS)) for j in jobs)
+                schedule[date_str] = {"booked": booked_hours, "jobs": len(jobs)}
+    except Exception as e:
+        print(f"Homebase schedule error: {e}")
+    return schedule
+
+
+def get_schedule_availability():
+    """Return a Discord-friendly message about available booking slots."""
+    schedule = get_homebase_schedule()
+
+    if not schedule:
+        return "📅 **Schedule**\nMonday to Friday, 7 hours max per day. DM or call to book: (403) 878-6670 or visit clearestviewcleaners.com"
+
+    today = datetime.now(MOUNTAIN)
+    available_days = []
+    full_days = []
+
+    for i in range(14):
+        day = today + timedelta(days=i)
+        if day.weekday() >= 5:
+            continue
+        date_str = day.strftime("%Y-%m-%d")
+        day_label = day.strftime("%A, %B %d")
+        data = schedule.get(date_str, {"booked": 0, "jobs": 0})
+        booked = data["booked"]
+        remaining = MAX_HOURS_PER_DAY - booked
+
+        if remaining >= AVG_JOB_HOURS:
+            available_days.append(f"✅ **{day_label}** — {remaining:.0f}h available ({data['jobs']} job{'s' if data['jobs']!=1 else ''} booked)")
+        else:
+            full_days.append(f"🔴 **{day_label}** — Fully booked")
+
+    msg = "📅 **CVC BOOKING AVAILABILITY**\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    if available_days:
+        msg += "\n".join(available_days[:7])
+    else:
+        msg += "All days are fully booked right now!"
+
+    if full_days:
+        msg += "\n\n" + "\n".join(full_days[:3])
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━\n📞 Book at clearestviewcleaners.com or call (403) 878-6670"
+    return msg
+
+
+# ── HELPERS ───────────────────────────────────────────────────────────────────
 def discord_headers():
     return {"Authorization": f"Bot {os.environ.get('DISCORD_BOT_TOKEN')}", "Content-Type": "application/json"}
 
 
-def send_text(content):
+def send_text(content, tts=False):
     r = requests.post(f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
-                      headers=discord_headers(), json={"content": content})
+                      headers=discord_headers(), json={"content": content, "tts": tts})
     print("✅ Text sent" if r.status_code == 200 else f"❌ Text error: {r.status_code} {r.text}")
     return r.status_code == 200
 
 
 def get_bonus_count():
-    """4 bonuses on Fri/Sat/Sun (prime knocking days), 3 on weekdays."""
     day = datetime.now(MOUNTAIN).weekday()
     return 4 if day in [4, 5, 6] else 3
 
 
 def generate_daily_bonuses():
-    """Generate today's bonus set: always First Blood + creative ones to fill count."""
     global daily_bonuses
     claude = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     count = get_bonus_count()
-    creative_count = count - 1  # always keep First Blood, fill rest with creative
-
+    creative_count = count - 1
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
-    day_name = datetime.now(MOUNTAIN).strftime("%A")
 
-    prompt = f"""You are Leo, AI sales manager for Clearest View Cleaners (CVC), a window/exterior cleaning company in Medicine Hat, Alberta. D2D sales team.
-
-Today is {today}. Generate exactly {creative_count} creative bonus challenges. Budget $20-30 each max.
-Mix from: speed challenges, neighborhood sweeps, upsell bonuses, streak bonuses, mystery bonuses, time-window challenges, combo deals, comeback bonuses, referral bonuses.
-Keep them fun, specific to door-to-door sales, and achievable in one day.
-
-Return ONLY valid JSON array, no other text:
-[
-  {{"emoji": "⚡", "name": "Speed Round", "desc": "Close a sale within 10 min of knocking", "prize": "$20 cash bonus"}},
-  {{"emoji": "🗺️", "name": "Neighborhood Sweep", "desc": "Close 2 sales on the same street", "prize": "$25 cash bonus"}}
-]"""
+    prompt = f"""You are Leo, AI sales manager for Clearest View Cleaners in Medicine Hat, Alberta. D2D sales team.
+Today is {today}. Generate exactly {creative_count} creative bonus challenges. Budget $20-30 each.
+Mix from: speed challenges, neighborhood sweeps, upsell bonuses, streak bonuses, mystery bonuses, time-window challenges, combo deals, comeback bonuses.
+Return ONLY valid JSON array:
+[{{"emoji": "⚡", "name": "Speed Round", "desc": "Close a sale within 10 min of knocking", "prize": "$20 cash bonus"}}]"""
 
     try:
-        msg = claude.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        msg = claude.messages.create(model="claude-sonnet-4-5", max_tokens=400,
+                                     messages=[{"role": "user", "content": prompt}])
         creative = json.loads(msg.content[0].text.strip())[:creative_count]
     except Exception as e:
         print(f"Bonus gen error: {e}")
         creative = [
             {"emoji": "⚡", "name": "Speed Round", "desc": "Close within 10 min of knocking", "prize": "$20 cash bonus"},
             {"emoji": "🗺️", "name": "Neighborhood Sweep", "desc": "2 sales on the same street", "prize": "$25 cash bonus"},
-            {"emoji": "🎲", "name": "Mystery Bonus", "desc": "Ask Ryley — winner decided at EOD", "prize": "$20 cash bonus"},
+            {"emoji": "🎲", "name": "Mystery Bonus", "desc": "Ask Ryley — decided at EOD", "prize": "$20 cash bonus"},
         ][:creative_count]
 
-    daily_bonuses = [CORE_BONUSES[0]] + creative
-    print(f"✅ Generated {len(daily_bonuses)} bonuses for {day_name}")
+    daily_bonuses = [CORE_BONUS] + creative
     return daily_bonuses
 
 
@@ -97,7 +199,8 @@ def get_homebase_sales():
         if r.status_code == 200:
             jobs = r.json().get("jobs", [])
             sales = [{"rep": j.get("assigned_to","Unknown"), "customer": j.get("customer_name","Customer"),
-                      "amount": float(j.get("total",0)), "neighborhood": j.get("neighborhood",""), "time": j.get("time","")} for j in jobs]
+                      "amount": float(j.get("total",0)), "neighborhood": j.get("neighborhood",""),
+                      "time": j.get("time","")} for j in jobs]
             return sales or daily_sales_log
     except Exception as e:
         print(f"Homebase error: {e}")
@@ -119,7 +222,7 @@ def build_leaderboard_text(rep_totals=None):
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
     rep_totals = rep_totals or get_rep_totals()
     if not rep_totals:
-        return f"📊 **CVC LEADERBOARD — {today}**\n━━━━━━━━━━━━━━━━━━━━━━\nBoard is empty. First sale gets 🩸 First Blood!\nLet's get moving. 💪\n━━━━━━━━━━━━━━━━━━━━━━"
+        return f"📊 **CVC LEADERBOARD — {today}**\n━━━━━━━━━━━━━━━━━━━━━━\nBoard is empty. First sale gets 🩸 First Blood! Let's move. 💪\n━━━━━━━━━━━━━━━━━━━━━━"
     sorted_reps = sorted(rep_totals.items(), key=lambda x: x[1]["total"], reverse=True)
     team_total = sum(v["total"] for v in rep_totals.values())
     team_deals = sum(v["jobs"] for v in rep_totals.values())
@@ -181,12 +284,25 @@ def eod_report():
     daily_sales_log.clear()
 
 
+# ── SCHEDULER ─────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone=MOUNTAIN)
-scheduler.add_job(morning_post, CronTrigger(hour=8, minute=0, timezone=MOUNTAIN), id="morning")
+scheduler.add_job(morning_post, CronTrigger(hour=10, minute=0, timezone=MOUNTAIN), id="morning")
 scheduler.add_job(eod_report, CronTrigger(hour=21, minute=0, timezone=MOUNTAIN), id="eod")
 scheduler.start()
 
+# Run Discord bot in background thread
+def run_bot():
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("No Discord bot token found")
 
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
+
+
+# ── FLASK ROUTES ──────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return jsonify({"status": "Leo - CVC Sales Manager is running ✅"})
@@ -204,6 +320,12 @@ def add_sale():
     daily_sales_log.append(sale)
     post_sale_update(sale)
     return jsonify({"status": f"Sale logged — {rep} closed ${amount} with {customer}"})
+
+@app.route("/schedule")
+def schedule():
+    msg = get_schedule_availability()
+    send_text(msg)
+    return jsonify({"status": "Schedule posted", "message": msg})
 
 @app.route("/test-bonuses")
 def test_bonuses():
