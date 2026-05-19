@@ -1,12 +1,7 @@
 """
 Leo - CVC Sales Manager Agent
-Schedule:
-  8:00 AM  - Leaderboard text + daily bonuses IMAGE
-  After every sale - Real-time text update
-  9:00 PM  - End of day IMAGE report
-
-Environment variables:
-  DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, HOMEBASE_API_KEY, ANTHROPIC_API_KEY
+Gold & Black brand. 3-4 daily bonuses. Image graphics to Discord.
+Schedule: 8AM morning post, real-time sale updates, 9PM EOD report.
 """
 
 import os, io, json, requests, pytz, anthropic
@@ -19,15 +14,15 @@ from image_gen import generate_bonus_image, generate_eod_image, send_discord_ima
 app = Flask(__name__)
 MOUNTAIN = pytz.timezone("America/Edmonton")
 daily_sales_log = []
-daily_creative_bonuses = []
+daily_bonuses = []
 CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "1230709942265188352")
 
 CORE_BONUSES = [
-    {"emoji": "🩸", "name": "First blood",  "desc": "First sale of the day",         "prize": "Tim Hortons on Ryley", "color": "danger"},
-    {"emoji": "🎯", "name": "Big ticket",   "desc": "Highest single job value",       "prize": "$20 bonus",            "color": "warning"},
-    {"emoji": "🔥", "name": "Most deals",   "desc": "Most jobs closed today",         "prize": "$20 bonus",            "color": "warning"},
-    {"emoji": "🍽️", "name": "High roller",  "desc": "Sell $1,000+ in one day",       "prize": "Free dinner on CVC",   "color": "success"},
-    {"emoji": "🏆", "name": "Team goal",    "desc": "Team hits 10 deals today",       "prize": "$10 bonus everyone",   "color": "info"},
+    {"emoji": "🩸", "name": "First Blood",  "desc": "First sale of the day",        "prize": "Tim Hortons on Ryley"},
+    {"emoji": "🎯", "name": "Big Ticket",   "desc": "Highest single job value",      "prize": "$20 cash bonus"},
+    {"emoji": "🔥", "name": "Most Deals",   "desc": "Most jobs closed today",        "prize": "$20 cash bonus"},
+    {"emoji": "🍽️", "name": "High Roller",  "desc": "Sell $1,000+ in one day",      "prize": "Free dinner on CVC"},
+    {"emoji": "🏆", "name": "Team Goal",    "desc": "Team hits 10 deals today",      "prize": "$10 bonus everyone"},
 ]
 
 
@@ -36,33 +31,58 @@ def discord_headers():
 
 
 def send_text(content):
-    r = requests.post(f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages", headers=discord_headers(), json={"content": content})
-    print("✅ Text sent" if r.status_code == 200 else f"❌ Text error: {r.status_code}")
+    r = requests.post(f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages",
+                      headers=discord_headers(), json={"content": content})
+    print("✅ Text sent" if r.status_code == 200 else f"❌ Text error: {r.status_code} {r.text}")
     return r.status_code == 200
 
 
-def generate_creative_bonuses():
-    global daily_creative_bonuses
+def get_bonus_count():
+    """4 bonuses on Fri/Sat/Sun (prime knocking days), 3 on weekdays."""
+    day = datetime.now(MOUNTAIN).weekday()
+    return 4 if day in [4, 5, 6] else 3
+
+
+def generate_daily_bonuses():
+    """Generate today's bonus set: always First Blood + creative ones to fill count."""
+    global daily_bonuses
     claude = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    count = get_bonus_count()
+    creative_count = count - 1  # always keep First Blood, fill rest with creative
+
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
-    prompt = f"""You are Leo, AI sales manager for Clearest View Cleaners (CVC), a window/exterior cleaning company in Medicine Hat, Alberta.
-Today is {today}. Generate exactly 2 fresh creative daily bonus challenges for a D2D sales team. Budget under $30 each.
-Ideas: speed challenges, neighborhood sweeps, upsell bonuses, streak bonuses, mystery bonuses, time-window bonuses, combo deals.
-Return ONLY valid JSON:
+    day_name = datetime.now(MOUNTAIN).strftime("%A")
+
+    prompt = f"""You are Leo, AI sales manager for Clearest View Cleaners (CVC), a window/exterior cleaning company in Medicine Hat, Alberta. D2D sales team.
+
+Today is {today}. Generate exactly {creative_count} creative bonus challenges. Budget $20-30 each max.
+Mix from: speed challenges, neighborhood sweeps, upsell bonuses, streak bonuses, mystery bonuses, time-window challenges, combo deals, comeback bonuses, referral bonuses.
+Keep them fun, specific to door-to-door sales, and achievable in one day.
+
+Return ONLY valid JSON array, no other text:
 [
-  {{"emoji": "⚡", "name": "Speed round", "desc": "Close a sale within 10 min of knocking", "prize": "$20 bonus", "color": "purple"}},
-  {{"emoji": "🗺️", "name": "Neighborhood sweep", "desc": "Close 2 sales on the same street", "prize": "$25 bonus", "color": "teal"}}
+  {{"emoji": "⚡", "name": "Speed Round", "desc": "Close a sale within 10 min of knocking", "prize": "$20 cash bonus"}},
+  {{"emoji": "🗺️", "name": "Neighborhood Sweep", "desc": "Close 2 sales on the same street", "prize": "$25 cash bonus"}}
 ]"""
+
     try:
-        msg = claude.messages.create(model="claude-sonnet-4-5", max_tokens=300, messages=[{"role": "user", "content": prompt}])
-        daily_creative_bonuses = json.loads(msg.content[0].text.strip())
+        msg = claude.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        creative = json.loads(msg.content[0].text.strip())[:creative_count]
     except Exception as e:
-        print(f"Creative bonus error: {e}")
-        daily_creative_bonuses = [
-            {"emoji": "⚡", "name": "Speed round", "desc": "Close within 10 min of knocking", "prize": "$20 bonus", "color": "purple"},
-            {"emoji": "🗺️", "name": "Neighborhood sweep", "desc": "2 sales on the same street", "prize": "$25 bonus", "color": "teal"},
-        ]
-    return daily_creative_bonuses
+        print(f"Bonus gen error: {e}")
+        creative = [
+            {"emoji": "⚡", "name": "Speed Round", "desc": "Close within 10 min of knocking", "prize": "$20 cash bonus"},
+            {"emoji": "🗺️", "name": "Neighborhood Sweep", "desc": "2 sales on the same street", "prize": "$25 cash bonus"},
+            {"emoji": "🎲", "name": "Mystery Bonus", "desc": "Ask Ryley — winner decided at EOD", "prize": "$20 cash bonus"},
+        ][:creative_count]
+
+    daily_bonuses = [CORE_BONUSES[0]] + creative
+    print(f"✅ Generated {len(daily_bonuses)} bonuses for {day_name}")
+    return daily_bonuses
 
 
 def get_homebase_sales():
@@ -119,17 +139,17 @@ def post_sale_update(sale):
     rd = rep_totals.get(rep, {"total":0,"jobs":0})
     team_total = sum(v["total"] for v in rep_totals.values())
     team_deals = sum(v["jobs"] for v in rep_totals.values())
-    msg = f"""💥 **SALE CLOSED — {time_str}**\n━━━━━━━━━━━━━━━━━━━━━━\n👤 Customer: **{customer}**\n📍 Location: **{neighborhood or 'Medicine Hat'}**\n💼 Salesman: **{rep}**\n💵 Job Total: **${amount:.0f}**\n━━━━━━━━━━━━━━━━━━━━━━\n📈 {rep}'s day: **${rd['total']:.0f}** ({rd['jobs']} job{'s' if rd['jobs']!=1 else ''})\n💰 Team: **${team_total:.0f}** | **{team_deals} deals**"""
+    msg = f"💥 **SALE CLOSED — {time_str}**\n━━━━━━━━━━━━━━━━━━━━━━\n👤 **{customer}**\n📍 **{neighborhood or 'Medicine Hat'}**\n💼 **{rep}**\n💵 **${amount:.0f}**\n━━━━━━━━━━━━━━━━━━━━━━\n📈 {rep}: **${rd['total']:.0f}** ({rd['jobs']} job{'s' if rd['jobs']!=1 else ''})\n💰 Team: **${team_total:.0f}** | **{team_deals} deals**"
     if neighborhood:
         msg += f"\n\n🗺️ *{neighborhood} is open — get in there!*"
     send_text(msg)
 
 
 def morning_post():
-    generate_creative_bonuses()
-    send_text(build_leaderboard_text())
+    generate_daily_bonuses()
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
-    buf = generate_bonus_image(today, CORE_BONUSES, daily_creative_bonuses)
+    send_text(build_leaderboard_text())
+    buf = generate_bonus_image(today, daily_bonuses)
     send_discord_image(buf, filename="cvc_bonuses.png")
 
 
@@ -138,7 +158,7 @@ def eod_report():
     sales_data = get_homebase_sales()
     rep_totals = get_rep_totals(sales_data)
     if not rep_totals:
-        send_text(f"No sales logged today. Tomorrow we go harder. 💪")
+        send_text("No sales logged today. Tomorrow we go harder. 💪")
         return
     sorted_reps = sorted(rep_totals.items(), key=lambda x: x[1]["total"], reverse=True)
     team_total = sum(v["total"] for v in rep_totals.values())
@@ -148,9 +168,9 @@ def eod_report():
     if sales_data:
         rewards.append({"emoji":"🩸","name":"First Blood","winner":sales_data[0]["rep"],"prize":"Tim Hortons on Ryley"})
     if sorted_reps:
-        rewards.append({"emoji":"🎯","name":"Big Ticket","winner":sorted_reps[0][0],"prize":"$20 bonus"})
+        rewards.append({"emoji":"🎯","name":"Big Ticket","winner":sorted_reps[0][0],"prize":"$20 cash bonus"})
     most_deals = max(rep_totals.items(), key=lambda x: x[1]["jobs"])
-    rewards.append({"emoji":"🔥","name":"Most Deals","winner":most_deals[0],"prize":"$20 bonus"})
+    rewards.append({"emoji":"🔥","name":"Most Deals","winner":most_deals[0],"prize":"$20 cash bonus"})
     for rep, data in rep_totals.items():
         if data["total"] >= 1000:
             rewards.append({"emoji":"🍽️","name":"High Roller","winner":rep,"prize":"Free dinner on CVC"})
@@ -179,18 +199,19 @@ def add_sale():
     neighborhood = data.get("neighborhood","")
     if not rep or not amount:
         return jsonify({"error": "Missing rep or amount"}), 400
-    sale = {"rep":rep,"customer":customer,"amount":amount,"neighborhood":neighborhood,"time":datetime.now(MOUNTAIN).strftime("%-I:%M %p")}
+    sale = {"rep":rep,"customer":customer,"amount":amount,"neighborhood":neighborhood,
+            "time":datetime.now(MOUNTAIN).strftime("%-I:%M %p")}
     daily_sales_log.append(sale)
     post_sale_update(sale)
     return jsonify({"status": f"Sale logged — {rep} closed ${amount} with {customer}"})
 
 @app.route("/test-bonuses")
 def test_bonuses():
-    generate_creative_bonuses()
+    generate_daily_bonuses()
     today = datetime.now(MOUNTAIN).strftime("%A, %B %d")
-    buf = generate_bonus_image(today, CORE_BONUSES, daily_creative_bonuses)
+    buf = generate_bonus_image(today, daily_bonuses)
     send_discord_image(buf, filename="cvc_bonuses.png")
-    return jsonify({"status": "Bonus image posted", "creative": daily_creative_bonuses})
+    return jsonify({"status": "Bonus image posted", "count": len(daily_bonuses), "bonuses": daily_bonuses})
 
 @app.route("/test-leaderboard")
 def test_leaderboard():
@@ -205,7 +226,8 @@ def test_leaderboard():
 
 @app.route("/test-sale")
 def test_sale():
-    sale = {"rep":"Jared","customer":"Mike Johnson","amount":280,"neighborhood":"Ross Glen","time":datetime.now(MOUNTAIN).strftime("%-I:%M %p")}
+    sale = {"rep":"Jared","customer":"Mike Johnson","amount":280,"neighborhood":"Ross Glen",
+            "time":datetime.now(MOUNTAIN).strftime("%-I:%M %p")}
     daily_sales_log.append(sale)
     post_sale_update(sale)
     return jsonify({"status": "Test sale posted"})
